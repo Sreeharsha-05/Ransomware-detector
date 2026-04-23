@@ -249,7 +249,9 @@ def render_history():
     with col_csv:
         buf = io.StringIO()
         writer = csv.DictWriter(
-            buf, fieldnames=['time', 'type', 'label', 'confidence', 'input_preview']
+            buf,
+            fieldnames=['time', 'type', 'label', 'confidence', 'is_malicious', 'input_preview'],
+            extrasaction='ignore',
         )
         writer.writeheader()
         writer.writerows(history)
