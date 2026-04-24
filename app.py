@@ -218,6 +218,73 @@ def render_debug(result: dict, tokenizer):
             st.text_area("Full decoded sequence", decoded, height=120, key="decoded_seq")
 
 
+# ── Explanation renderer ──────────────────────────────────────────────────────
+def render_explanation(expl: dict):
+    """Render the explanation block returned by build_explanation()."""
+    from explainability import SECTION_NAMES
+
+    st.markdown("---")
+    st.markdown("### Why the model made this prediction")
+
+    # ── Summary paragraph ────────────────────────────────────────────────────
+    st.info(expl['summary'])
+
+    col_contrib, col_flags = st.columns([1, 1], gap="large")
+
+    # ── Section contribution chart ───────────────────────────────────────────
+    with col_contrib:
+        st.markdown("**Feature channel influence**")
+        st.caption(
+            "How much each channel pushed the model toward this prediction. "
+            "Positive = supported it. Negative = opposed it."
+        )
+        contribs = expl['section_contributions']
+        colors   = ['#e74c3c' if v >= 0 else '#3498db' for v in contribs]
+
+        fig = go.Figure(go.Bar(
+            x=contribs,
+            y=SECTION_NAMES,
+            orientation='h',
+            marker_color=colors,
+            text=[f"{v:+.3f}" for v in contribs],
+            textposition='outside',
+        ))
+        fig.update_layout(
+            xaxis=dict(title="Probability contribution", zeroline=True,
+                       zerolinewidth=2, zerolinecolor='#888'),
+            height=280,
+            margin=dict(l=50, r=60, t=20, b=30),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── Indicator flags ──────────────────────────────────────────────────────
+    with col_flags:
+        st.markdown("**Behavioural indicator scan**")
+
+        ransom = expl['ransom_flags']
+        good   = expl['goodware_flags']
+
+        if ransom:
+            st.markdown("🔴 **Ransomware indicators found:**")
+            for label, matched in ransom:
+                examples = ', '.join(f'`{m}`' for m in matched) if matched else ''
+                st.markdown(f"&nbsp;&nbsp;• **{label}**" + (f" — {examples}" if examples else ""))
+        else:
+            st.markdown("🟢 No ransomware indicators detected")
+
+        st.markdown("")
+
+        if good:
+            st.markdown("🟢 **Goodware indicators found:**")
+            for label, matched in good:
+                examples = ', '.join(f'`{m}`' for m in matched) if matched else ''
+                st.markdown(f"&nbsp;&nbsp;• **{label}**" + (f" — {examples}" if examples else ""))
+        else:
+            st.markdown("⚪ No goodware indicators detected")
+
+
 # ── Prediction history ────────────────────────────────────────────────────────
 def add_to_history(entry: dict):
     if 'history' not in st.session_state:
@@ -370,6 +437,11 @@ def main():
 
                     render_debug(result, tokenizer)
 
+                    with st.spinner("Analysing prediction reasoning…"):
+                        from explainability import build_explanation
+                        expl = build_explanation(user_input, result, model, tokenizer, 'family')
+                    render_explanation(expl)
+
                     add_to_history({
                         'time'         : datetime.now().strftime("%H:%M:%S"),
                         'type'         : 'Family',
@@ -419,6 +491,11 @@ def main():
                     st.plotly_chart(fig, use_container_width=True)
 
                     render_debug(result, tokenizer)
+
+                    with st.spinner("Analysing prediction reasoning…"):
+                        from explainability import build_explanation
+                        expl = build_explanation(user_input, result, model, tokenizer, 'zeroday')
+                    render_explanation(expl)
 
                     add_to_history({
                         'time'         : datetime.now().strftime("%H:%M:%S"),
