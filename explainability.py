@@ -212,82 +212,119 @@ def build_explanation(
     else:
         pred_class = 1 if result['is_malicious'] else 0
 
-    contributions              = compute_section_contributions(model, tokenizer, raw_text, pred_class)
+    contributions               = compute_section_contributions(model, tokenizer, raw_text, pred_class)
     ransom_flags, goodware_hits = scan_indicators(raw_text)
 
     top_idx     = int(np.argmax(contributions))
     top_section = SECTION_NAMES[top_idx]
 
-    # Build plain-text summary
+    # ── Determine whether model and indicator scan agree ─────────────────────
+    if model_type == 'family':
+        model_says_malicious = (result['label'] != 'Goodware')
+    else:
+        model_says_malicious = result['is_malicious']
+
+    indicator_leans_malicious = len(ransom_flags) > len(goodware_hits)
+    indicator_leans_benign    = len(goodware_hits) > len(ransom_flags)
+    indicators_present        = bool(ransom_flags or goodware_hits)
+
+    # Conflict: model and indicators point in opposite directions
+    conflict = indicators_present and (
+        (model_says_malicious and indicator_leans_benign) or
+        (not model_says_malicious and indicator_leans_malicious)
+    )
+
+    # ── Confidence level label ────────────────────────────────────────────────
+    if model_type == 'zeroday':
+        prob = result['probability'] if model_says_malicious else 1 - result['probability']
+    else:
+        prob = result['confidence']
+
+    if prob >= 0.80:
+        conf_label = "high confidence"
+    elif prob >= 0.65:
+        conf_label = "moderate confidence"
+    else:
+        conf_label = "low confidence — treat this result with caution"
+
+    # ── Build summary ─────────────────────────────────────────────────────────
     parts = []
 
+    # Verdict sentence
     if model_type == 'family':
         label = result['label']
-        conf  = result['confidence']
         if label == 'Goodware':
             parts.append(
-                f"The model classified this sample as Goodware with "
-                f"{conf*100:.1f}% confidence."
+                f"The model classified this as Goodware ({prob*100:.1f}%, {conf_label})."
             )
         else:
             parts.append(
-                f"The model identified this as {label} ransomware with "
-                f"{conf*100:.1f}% confidence."
+                f"The model identified this as {label} ransomware "
+                f"({prob*100:.1f}%, {conf_label})."
             )
     else:
-        if result['is_malicious']:
+        if model_says_malicious:
             parts.append(
-                f"The zero-day detector flagged this sample as ransomware "
-                f"({result['probability']*100:.1f}% malicious probability)."
+                f"The zero-day detector flagged this as ransomware "
+                f"({result['probability']*100:.1f}% malicious probability, {conf_label})."
             )
         else:
             parts.append(
-                f"The zero-day detector classified this sample as benign "
-                f"({(1-result['probability'])*100:.1f}% benign probability)."
+                f"The zero-day detector classified this as benign "
+                f"({(1-result['probability'])*100:.1f}% benign probability, {conf_label})."
             )
 
+    # Channel influence
     if contributions[top_idx] > 0.005:
         parts.append(
-            f"The {top_section} channel had the strongest influence on this "
-            f"decision — removing it causes the largest drop in prediction confidence."
+            f"The {top_section} channel had the strongest influence — "
+            f"removing it causes the largest drop in prediction confidence."
         )
     else:
         parts.append(
-            "No single feature channel dominated the decision; "
-            "the prediction is based on a broad combination of signals."
+            "No single channel dominated the decision; "
+            "the model relied on a broad combination of signals."
         )
 
+    # Indicator findings
     if ransom_flags:
         labels = ', '.join(lbl for lbl, _ in ransom_flags)
-        parts.append(
-            f"Ransomware-associated patterns were found: {labels}. "
-            "These patterns correlate strongly with malicious behaviour in the training data."
-        )
+        parts.append(f"Ransomware-associated patterns detected: {labels}.")
     else:
-        parts.append(
-            "No known ransomware indicator patterns were detected in the input."
-        )
+        parts.append("No known ransomware indicator patterns were detected.")
 
     if goodware_hits:
         labels = ', '.join(lbl for lbl, _ in goodware_hits)
-        parts.append(
-            f"Goodware-associated patterns were also present: {labels}."
-        )
+        parts.append(f"Goodware-associated patterns detected: {labels}.")
 
-    # Overall lean
-    if len(ransom_flags) > len(goodware_hits):
+    # Conflict / agreement conclusion
+    if conflict and model_says_malicious:
         parts.append(
-            "On balance, the indicator profile leans malicious."
+            "CONFLICT: The rule-based indicator scan found mostly benign patterns, "
+            "yet the model predicted ransomware. "
+            "This means the model detected subtle statistical patterns in the "
+            f"{top_section} channel that are not captured by keyword rules — "
+            "possibly a non-obvious ransomware signature, or a false positive. "
+            "Given the low confidence, treat this prediction with scepticism and "
+            "verify with a full sandbox log."
         )
-    elif len(goodware_hits) > len(ransom_flags):
+    elif conflict and not model_says_malicious:
         parts.append(
-            "On balance, the indicator profile leans benign."
+            "CONFLICT: The rule-based indicator scan found ransomware patterns, "
+            "yet the model predicted benign. "
+            "The model may have overridden the indicators based on the overall "
+            "sequence context. Manual review is recommended."
         )
+    elif not indicators_present:
+        parts.append(
+            "Neither ransomware nor goodware indicators were found in the input. "
+            "The prediction is based entirely on learned sequence patterns, "
+            "which may not be reliable for manually composed or sparse inputs."
+        )
+    elif indicator_leans_malicious:
+        parts.append("The indicator profile corroborates the model's verdict.")
     else:
-        parts.append(
-            "The indicator profile is mixed or absent — "
-            "the model relied primarily on learned sequence patterns."
-        )
+        parts.append("The indicator profile corroborates the model's verdict.")
 
     return {
         'section_contributions': contributions,
@@ -295,4 +332,7 @@ def build_explanation(
         'goodware_flags'       : goodware_hits,
         'summary'              : ' '.join(parts),
         'top_section'          : top_section,
+        'conflict'             : conflict,
+        'model_says_malicious' : model_says_malicious,
+        'confidence_label'     : conf_label,
     }

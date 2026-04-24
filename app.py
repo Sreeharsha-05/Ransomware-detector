@@ -226,8 +226,37 @@ def render_explanation(expl: dict):
     st.markdown("---")
     st.markdown("### Why the model made this prediction")
 
+    # ── Conflict banner ──────────────────────────────────────────────────────
+    if expl.get('conflict'):
+        if expl.get('model_says_malicious'):
+            st.warning(
+                "**Conflict detected:** The model predicted ransomware but the "
+                "rule-based indicator scan found only benign patterns. "
+                "The model likely activated on subtle learned sequence patterns "
+                "not captured by keyword rules. "
+                f"Confidence is **{expl['confidence_label']}** — "
+                "verify with a full sandbox log before acting on this result."
+            )
+        else:
+            st.warning(
+                "**Conflict detected:** The model predicted benign but the "
+                "rule-based indicator scan found ransomware-associated patterns. "
+                "Manual review is recommended."
+            )
+    elif expl.get('confidence_label', '').startswith('low'):
+        st.warning(
+            f"**Low confidence prediction** — the model is near its decision "
+            f"boundary. This result is less reliable, especially for sparse or "
+            f"manually composed inputs."
+        )
+
     # ── Summary paragraph ────────────────────────────────────────────────────
-    st.info(expl['summary'])
+    # Strip the CONFLICT sentence from summary (it's shown in the banner above)
+    summary = expl['summary'].replace(
+        expl['summary'][expl['summary'].find('CONFLICT:'):] if 'CONFLICT:' in expl['summary'] else '',
+        ''
+    ).strip()
+    st.info(summary if summary else expl['summary'])
 
     col_contrib, col_flags = st.columns([1, 1], gap="large")
 
